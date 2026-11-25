@@ -1,0 +1,16 @@
+# Privilege separation configuration for CachyOS Linux
+# Place in /etc/sudoers.d/drive-syncd (mode 0440) and validate with `visudo -cf /etc/sudoers.d/drive-syncd`
+#
+# Allows the `drivesync` service user (or members of the `drivesync` group) to validate
+# and hot-reload Samba configuration without full root access.
+#
+# Ensure `/etc/samba/shares-syncd.conf` (or a dedicated `/etc/samba/syncd.d/` directory)
+# is writable by group `drivesync` (chmod 0664, chgrp drivesync).
+
+Cmnd_Alias SAMBA_SYNCD_CMDS = \
+    /usr/bin/testparm -s, \
+    /usr/bin/testparm -s /etc/samba/smb.conf, \
+    /usr/bin/testparm -s /etc/samba/shares-syncd.conf, \
+    /usr/bin/smbcontrol smbd reload-config
+
+%drivesync ALL=(root) NOPASSWD: SAMBA_SYNCD_CMDS

@@ -1,0 +1,32 @@
+# /etc/samba/smb.conf example for CachyOS Linux with Tailscale-only SMB3 binding
+[global]
+   workgroup = WORKGROUP
+   server string = CachyOS Drive Sync
+   interfaces = lo 100.64.0.10
+   bind interfaces only = yes
+   server min protocol = SMB3
+   smb encrypt = desired
+   map to guest = Never
+   security = user
+   load printers = no
+   printing = bsd
+   printcap name = /dev/null
+   disable spoolss = yes
+   include = /etc/samba/shares-syncd.conf
+
+# --- Below is an example of the auto-generated /etc/samba/shares-syncd.conf ---
+# Do not edit /etc/samba/shares-syncd.conf manually; it is managed atomically by drivectl / drive-syncd.
+#
+# [today]
+#    comment = Today folder synced with Google Drive
+#    path = /srv/drive-images/Today
+#    browseable = yes
+#    read only = no
+#    guest ok = no
+#    create mask = 0664
+#    directory mask = 0775
+#    force user = drivesync
+#    force group = drivesync
+#    vfs objects = fruit streams_xattr
+#    fruit:metadata = stream
+#    fruit:posix_rename = yes

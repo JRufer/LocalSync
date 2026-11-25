@@ -1,0 +1,54 @@
+# LocalSync (drive-smb-sync) Configuration Example
+# Copy to /etc/drive-smb-sync/config.toml or ./config.toml
+
+# Google Drive target folder ID to synchronize (e.g., your "Images" folder ID)
+root_folder_id = "1A2B3C4D5E6F7G8H9I0J_example_folder_id"
+
+# Local directory mirrored with Google Drive and exported via Samba SMB3
+local_root = "/srv/drive-images"
+
+# SQLite WAL database path for sync state, file tree index, and events
+db_path = "/var/lib/drive-syncd/state.db"
+
+# Host's Tailscale IPv4 address (must be in the 100.64.0.0/10 CGNAT range or 127.0.0.1 for local testing)
+tailscale_ip = "100.64.0.10"
+
+# Optional port for the Tailscale-bound Axum web UI
+web_port = 8420
+
+# Move remotely deleted local files to Google Drive Trash (true) or permanently delete (false)
+trash_on_delete = true
+
+# Poll interval in seconds for Google Drive Changes.list delta sync
+poll_interval_secs = 15
+
+# Local filesystem watcher debounce window in milliseconds
+debounce_ms = 500
+
+# Maximum concurrent Google Drive transfers (uploads/downloads)
+max_concurrent_transfers = 8
+
+[oauth]
+client_id = "YOUR_GOOGLE_OAUTH_CLIENT_ID.apps.googleusercontent.com"
+client_secret = "YOUR_GOOGLE_OAUTH_CLIENT_SECRET"
+token_path = "/var/lib/drive-syncd/token.json"
+redirect_port = 8899
+
+[samba]
+# Generated include file included from /etc/samba/smb.conf
+shares_conf_path = "/etc/samba/shares-syncd.conf"
+testparm_bin = "testparm"
+smbcontrol_bin = "smbcontrol"
+# Enable vfs_fruit + streams_xattr for macOS Finder / iOS compatibility alongside Windows, Linux, and Android
+macos_fruit = true
+create_mask = "0664"
+directory_mask = "0775"
+# Optional forced user/group so SMB writes match drive-syncd filesystem ownership
+force_user = "drivesync"
+force_group = "drivesync"
+
+[[shares]]
+share_name = "today"
+rel_path = "Today"
+read_only = false
+comment = "Today folder synced with Google Drive"

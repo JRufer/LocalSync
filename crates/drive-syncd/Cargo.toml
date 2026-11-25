@@ -1,0 +1,16 @@
+[package]
+name = "drive-syncd"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+tokio.workspace = true
+clap.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+sync-core.workspace = true
+share-smb.workspace = true
+share-ui.workspace = true

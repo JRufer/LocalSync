@@ -1,0 +1,8 @@
+/target
+/*.db
+/*.db-shm
+/*.db-wal
+/config.toml
+/token_cache.json
+.DS_Store
+*.swp

@@ -1,0 +1,24 @@
+[package]
+name = "share-ui"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+ratatui.workspace = true
+crossterm.workspace = true
+tui-tree-widget.workspace = true
+axum.workspace = true
+chrono.workspace = true
+sync-core.workspace = true
+share-smb.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

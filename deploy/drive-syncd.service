@@ -1,0 +1,25 @@
+[Unit]
+Description=LocalSync Google Drive v3 to SMB3 Bidirectional Sync Daemon
+After=network-online.target tailscaled.service smb.service
+Wants=network-online.target tailscaled.service
+
+[Service]
+Type=simple
+User=drivesync
+Group=drivesync
+UMask=0002
+ExecStart=/usr/local/bin/drive-syncd --config /etc/drive-smb-sync/config.toml
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5s
+Environment=RUST_LOG=info,sync_core=debug,share_smb=info
+
+# Hardening for CachyOS / Arch Linux systemd
+NoNewPrivileges=false
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/srv/drive-images /var/lib/drive-syncd /etc/samba /etc/drive-smb-sync
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target
