@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::process::Command;
 use sync_core::config::SambaConfig;
 use thiserror::Error;
@@ -39,10 +40,15 @@ pub fn validate_and_reload_samba(
         });
     }
 
-    // 1. Validate with `testparm -s <shares_conf_path>`
+    // 1. Validate with `testparm -s <smb.conf or shares_conf_path>`
+    let testparm_target = if Path::new("/etc/samba/smb.conf").exists() {
+        Path::new("/etc/samba/smb.conf")
+    } else {
+        samba.shares_conf_path.as_path()
+    };
     let testparm_res = Command::new(&samba.testparm_bin)
         .arg("-s")
-        .arg(&samba.shares_conf_path)
+        .arg(testparm_target)
         .output();
 
     let testparm_passed = match testparm_res {
@@ -69,17 +75,37 @@ pub fn validate_and_reload_samba(
         }
     };
 
-    // 2. Reload smbd configuration with `smbcontrol smbd reload-config`
-    let smbcontrol_res = Command::new(&samba.smbcontrol_bin)
-        .args(["smbd", "reload-config"])
-        .output();
+    // 2. Reload smbd configuration with `smbcontrol smbd reload-config` (via sudo -n if non-root)
+    let is_root = std::env::var("USER").as_deref() == Ok("root")
+        || std::env::var("EUID").as_deref() == Ok("0");
+    let smbcontrol_res = if is_root {
+        Command::new(&samba.smbcontrol_bin)
+            .args(["smbd", "reload-config"])
+            .output()
+    } else {
+        Command::new("sudo")
+            .args(["-n", &samba.smbcontrol_bin, "smbd", "reload-config"])
+            .output()
+            .or_else(|_| {
+                Command::new(&samba.smbcontrol_bin)
+                    .args(["smbd", "reload-config"])
+                    .output()
+            })
+    };
 
     match smbcontrol_res {
         Ok(output) => {
             if !output.status.success() {
-                let code = output.status.code().unwrap_or(-1);
-                let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-                return Err(ReloadError::SmbcontrolFailed { code, stderr });
+                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                warn!(
+                    stderr = %stderr,
+                    "smbcontrol reload-config returned non-zero (smbd may not be running yet); shares-syncd.conf is updated on disk"
+                );
+                return Ok(ReloadOutcome {
+                    testparm_passed,
+                    smbd_reloaded: false,
+                    details: format!("shares-syncd.conf written (smbd reload skipped: {stderr})"),
+                });
             }
             info!("Reloaded smbd configuration via smbcontrol");
             Ok(ReloadOutcome {

@@ -74,13 +74,62 @@ fi
 
 touch "$SHARES_CONF"
 
-# 4. Optional system-wide Samba hookup (if user has sudo and Samba installed)
+# 4. Optional system-wide Samba hookup (installs samba on CachyOS if missing, configures Tailscale SMB3, sudoers, and smb.service)
 if [[ "${1:-}" == "--with-system-samba" ]]; then
-    echo "-> Configuring /etc/samba/shares-syncd.conf and sudoers rule..."
+    echo "-> Checking for Samba installation..."
+    if ! command -v smbd >/dev/null 2>&1; then
+        echo "-> Installing 'samba' package via pacman..."
+        sudo pacman -S --needed --noconfirm samba
+    fi
+
+    echo "-> Configuring /etc/samba and /etc/samba/shares-syncd.conf..."
+    sudo mkdir -p /etc/samba /var/lib/samba/private
     sudo ln -sf "$SHARES_CONF" /etc/samba/shares-syncd.conf
-    sudo install -Dm440 "$REPO_DIR/deploy/polkit-or-sudoers.example" /etc/sudoers.d/drive-syncd
-    if ! grep -q "shares-syncd.conf" /etc/samba/smb.conf 2>/dev/null; then
-        echo "   NOTE: Add 'include = /etc/samba/shares-syncd.conf' to [global] in /etc/samba/smb.conf"
+
+    if [[ ! -f /etc/samba/smb.conf ]]; then
+        echo "-> Creating Tailscale-bound SMB3 /etc/samba/smb.conf..."
+        sudo tee /etc/samba/smb.conf >/dev/null <<SMBEOF
+[global]
+   workgroup = WORKGROUP
+   server string = CachyOS LocalSync Drive SMB3
+   interfaces = lo $TS_IP
+   bind interfaces only = yes
+   server min protocol = SMB3
+   smb encrypt = desired
+   map to guest = Never
+   security = user
+   load printers = no
+   printing = bsd
+   printcap name = /dev/null
+   disable spoolss = yes
+   include = /etc/samba/shares-syncd.conf
+SMBEOF
+    elif ! grep -q "shares-syncd.conf" /etc/samba/smb.conf 2>/dev/null; then
+        echo "-> Adding 'include = /etc/samba/shares-syncd.conf' to /etc/samba/smb.conf..."
+        sudo sed -i '/\[global\]/a \   include = /etc/samba/shares-syncd.conf' /etc/samba/smb.conf
+    fi
+
+    echo "-> Installing passwordless sudoers rule for testparm & smbcontrol..."
+    sudo tee /etc/sudoers.d/drive-syncd >/dev/null <<SUDOEOF
+Cmnd_Alias SAMBA_SYNCD_CMDS = \\
+    /usr/bin/testparm -s, \\
+    /usr/bin/testparm -s /etc/samba/smb.conf, \\
+    /usr/bin/testparm -s /etc/samba/shares-syncd.conf, \\
+    /usr/bin/testparm -s $SHARES_CONF, \\
+    /usr/bin/smbcontrol smbd reload-config
+
+$USER ALL=(root) NOPASSWD: SAMBA_SYNCD_CMDS
+%drivesync ALL=(root) NOPASSWD: SAMBA_SYNCD_CMDS
+SUDOEOF
+    sudo chmod 0440 /etc/sudoers.d/drive-syncd
+
+    echo "-> Enabling and starting smb.service..."
+    sudo systemctl enable --now smb.service || true
+
+    if ! sudo pdbedit -L 2>/dev/null | grep -q "^$USER:"; then
+        echo ""
+        echo "-> Set a Samba password for user '$USER' (used when mounting smb://$TS_IP/<share> from Windows/macOS/Android/Linux):"
+        sudo smbpasswd -a "$USER" || true
     fi
 fi
 
