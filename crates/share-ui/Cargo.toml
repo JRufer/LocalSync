@@ -17,6 +17,7 @@ crossterm.workspace = true
 tui-tree-widget.workspace = true
 axum.workspace = true
 chrono.workspace = true
+ksni.workspace = true
 sync-core.workspace = true
 share-smb.workspace = true
 

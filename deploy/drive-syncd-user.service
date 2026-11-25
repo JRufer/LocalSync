@@ -1,0 +1,17 @@
+[Unit]
+Description=LocalSync Google Drive v3 <-> SMB3 Sync Daemon & System Tray Web Manager
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/drive-syncd --config %h/.config/localsync/config.toml --with-web-ui
+Restart=on-failure
+RestartSec=5s
+Environment=RUST_LOG=info,sync_core=info,share_smb=info
+Nice=5
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6
+
+[Install]
+WantedBy=default.target

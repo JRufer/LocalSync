@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use share_smb::{add_or_update_share, model::suggest_share_name, remove_share_by_name};
-use share_ui::{format_bytes, tui::run_tui, web::serve_tailscale_web_ui};
+use share_ui::{format_bytes, tray::run_system_tray, tui::run_tui, web::serve_tailscale_web_ui};
 use std::path::PathBuf;
 use std::sync::Arc;
 use sync_core::{
@@ -32,6 +32,12 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
+    /// Run the desktop system tray applet (with integrated Share Manager Web UI & click-to-share menu)
+    Tray {
+        /// Also start the embedded Tailscale Web UI if drive-syncd is not already hosting it
+        #[arg(long, default_value_t = true)]
+        with_web: bool,
+    },
     /// Launch interactive Ratatui folder tree browser and SMB3 share manager
     Ui,
     /// Start Tailscale-bound Axum web UI for browsing folders and toggling SMB3 shares
@@ -99,6 +105,37 @@ async fn main() -> Result<()> {
     db.ensure_sync_state(&config.root_folder_id)?;
 
     match cli.command {
+        Commands::Tray { with_web } => {
+            std::fs::create_dir_all(&config.local_root).ok();
+            if with_web {
+                let web_cfg = config.clone();
+                let web_cfg_path = Some(cli.config.clone());
+                let web_db = db.clone();
+                let skip_smb = cli.no_samba_reload;
+                tokio::spawn(async move {
+                    // If drive-syncd already bound the port, ignore the bind error cleanly
+                    let _ = serve_tailscale_web_ui(web_cfg, web_cfg_path, web_db, skip_smb).await;
+                });
+            }
+            let sync_cfg_path = cli.config.clone();
+            let trigger = Arc::new(move || {
+                if let Ok(exe) = std::env::current_exe() {
+                    let _ = std::process::Command::new(exe)
+                        .arg("--config")
+                        .arg(&sync_cfg_path)
+                        .arg("sync")
+                        .spawn();
+                }
+            });
+            run_system_tray(
+                config,
+                Some(cli.config),
+                db,
+                cli.no_samba_reload,
+                Some(trigger),
+            )
+            .await?;
+        }
         Commands::Ui => {
             run_tui(
                 config,

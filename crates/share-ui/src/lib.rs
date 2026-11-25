@@ -1,3 +1,4 @@
+pub mod tray;
 pub mod tui;
 pub mod web;
 

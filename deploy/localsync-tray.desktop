@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=LocalSync (Drive & SMB3 Tray)
+GenericName=Google Drive & Tailscale SMB3 Share Manager
+Comment=Sits in the system tray to add, edit, and sync Google Drive SMB3 shares over Tailscale
+Exec=sh -c "$HOME/.local/bin/drivectl --config $HOME/.config/localsync/config.toml tray"
+Icon=folder-cloud
+Terminal=false
+Categories=Network;FileTransfer;Utility;
+StartupNotify=false
+X-GNOME-Autostart-enabled=true
+X-KDE-autostart-after=panel
