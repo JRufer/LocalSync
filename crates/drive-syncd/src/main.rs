@@ -33,18 +33,30 @@ struct Args {
     /// Skip calling testparm / smbcontrol on startup (useful for unprivileged dry-runs)
     #[arg(long)]
     no_samba_reload: bool,
+    /// Number of Tokio worker threads (defaults to 2 for minimal background CPU/RAM overhead)
+    #[arg(long, default_value_t = 2)]
+    worker_threads: usize,
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
+    let args = Args::parse();
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(args.worker_threads.clamp(1, 16))
+        .thread_name("drive-syncd-worker")
+        .enable_all()
+        .build()
+        .context("failed to initialize Tokio runtime")?;
+
+    runtime.block_on(async_main(args))
+}
+
+async fn async_main(args: Args) -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
         .init();
-
-    let args = Args::parse();
     let config = AppConfig::load_from_path(&args.config)
         .with_context(|| format!("failed to load configuration from {}", args.config.display()))?;
 

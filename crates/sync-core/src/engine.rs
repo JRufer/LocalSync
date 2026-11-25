@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 use thiserror::Error;
 use tokio::fs;
+use tokio::io::AsyncReadExt;
 use tokio::sync::Semaphore;
 use tracing::{debug, info, warn};
 
@@ -44,10 +45,16 @@ pub struct LocalFileHashes {
     pub modified_ms: i64,
 }
 
-/// Computes MD5, BLAKE3, size, and mtime for a local file.
-pub async fn hash_local_file(path: &Path) -> Result<LocalFileHashes, std::io::Error> {
-    let bytes = fs::read(path).await?;
+/// Computes MD5, BLAKE3, size, and mtime for a local file using a fixed 64 KiB streaming buffer
+/// (never loading the entire file into heap memory).
+/// If `cached` has matching `size_bytes` and `local_modified_ms` plus both hashes, returns
+/// the cached hashes in O(1) after a single `stat()` syscall without reading disk blocks.
+pub async fn hash_local_file_fast(
+    path: &Path,
+    cached: Option<&EntryRow>,
+) -> Result<LocalFileHashes, std::io::Error> {
     let meta = fs::metadata(path).await?;
+    let size_bytes = meta.len() as i64;
     let modified_ms = meta
         .modified()
         .ok()
@@ -55,17 +62,47 @@ pub async fn hash_local_file(path: &Path) -> Result<LocalFileHashes, std::io::Er
         .map(|d| d.as_millis() as i64)
         .unwrap_or_else(now_epoch_ms);
 
+    if let Some(row) = cached {
+        if row.size_bytes == size_bytes && row.local_modified_ms == Some(modified_ms) {
+            if let (Some(md5_hex), Some(blake3_hex)) = (&row.md5_checksum, &row.blake3_hash) {
+                return Ok(LocalFileHashes {
+                    md5_hex: md5_hex.clone(),
+                    blake3_hex: blake3_hex.clone(),
+                    size_bytes,
+                    modified_ms,
+                });
+            }
+        }
+    }
+
+    let mut file = fs::File::open(path).await?;
+    let mut buf = vec![0u8; 64 * 1024];
     let mut md5_hasher = Md5::new();
-    md5_hasher.update(&bytes);
+    let mut blake3_hasher = blake3::Hasher::new();
+
+    loop {
+        let n = file.read(&mut buf).await?;
+        if n == 0 {
+            break;
+        }
+        md5_hasher.update(&buf[..n]);
+        blake3_hasher.update(&buf[..n]);
+    }
+
     let md5_hex = hex::encode(md5_hasher.finalize());
-    let blake3_hex = blake3::hash(&bytes).to_hex().to_string();
+    let blake3_hex = blake3_hasher.finalize().to_hex().to_string();
 
     Ok(LocalFileHashes {
         md5_hex,
         blake3_hex,
-        size_bytes: bytes.len() as i64,
+        size_bytes,
         modified_ms,
     })
+}
+
+/// Computes MD5, BLAKE3, size, and mtime for a local file without a cached baseline.
+pub async fn hash_local_file(path: &Path) -> Result<LocalFileHashes, std::io::Error> {
+    hash_local_file_fast(path, None).await
 }
 
 /// Formats a conflict sibling path: `<stem>.conflict-<unix_epoch_secs><ext>` in the same folder.
@@ -194,7 +231,7 @@ impl<D: DriveApi> SyncEngine<D> {
                 self.download_remote_file(rel_path, rfile, &mut report).await?;
             } else {
                 // File exists both locally and on Drive
-                let local_info = hash_local_file(&local_file).await?;
+                let local_info = hash_local_file_fast(&local_file, baseline).await?;
                 let remote_md5 = rfile.md5_checksum.clone().unwrap_or_default();
 
                 if !remote_md5.is_empty() && remote_md5.eq_ignore_ascii_case(&local_info.md5_hex) {
@@ -442,7 +479,7 @@ impl<D: DriveApi> SyncEngine<D> {
         if !local_path.exists() {
             self.download_remote_file(&rel_path, &rfile, report).await?;
         } else {
-            let local_info = hash_local_file(&local_path).await?;
+            let local_info = hash_local_file_fast(&local_path, baseline.as_ref()).await?;
             let remote_md5 = rfile.md5_checksum.clone().unwrap_or_default();
             if !remote_md5.is_empty() && remote_md5.eq_ignore_ascii_case(&local_info.md5_hex) {
                 return Ok(());
@@ -660,8 +697,8 @@ impl<D: DriveApi> SyncEngine<D> {
             return Ok(());
         }
 
-        let local_info = hash_local_file(&abs_path).await?;
         let existing = self.db.get_entry(rel_path)?;
+        let local_info = hash_local_file_fast(&abs_path, existing.as_ref()).await?;
 
         if let Some(ref row) = existing {
             if row.md5_checksum.as_deref() == Some(local_info.md5_hex.as_str())
@@ -1022,6 +1059,42 @@ mod tests {
             samba: SambaConfig::default(),
             shares: vec![],
         }
+    }
+
+        #[tokio::test]
+    async fn test_fast_path_hash_skips_disk_read_when_size_and_mtime_match() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("photo.jpg");
+        std::fs::write(&file_path, b"original_2mb_payload").unwrap();
+
+        let first = hash_local_file(&file_path).await.unwrap();
+        let now = now_epoch_ms();
+        let cached_row = EntryRow {
+            rel_path: "photo.jpg".to_string(),
+            parent_rel_path: None,
+            name: "photo.jpg".to_string(),
+            is_dir: false,
+            drive_file_id: Some("drv_1".to_string()),
+            drive_parent_id: Some("root".to_string()),
+            md5_checksum: Some("cached_md5_sentinel".to_string()),
+            blake3_hash: Some("cached_blake3_sentinel".to_string()),
+            size_bytes: first.size_bytes,
+            remote_modified_ms: Some(now),
+            local_modified_ms: Some(first.modified_ms),
+            sync_status: SyncStatus::Synced,
+            last_synced_hash: Some("cached_md5_sentinel".to_string()),
+            suppress_remote_until_ms: 0,
+            suppress_local_until_ms: 0,
+            updated_at: now,
+        };
+
+        // Because size_bytes and local_modified_ms match the file's stat() metadata,
+        // hash_local_file_fast returns the cached hashes in O(1) without reading the file.
+        let fast = hash_local_file_fast(&file_path, Some(&cached_row))
+            .await
+            .unwrap();
+        assert_eq!(fast.md5_hex, "cached_md5_sentinel");
+        assert_eq!(fast.blake3_hex, "cached_blake3_sentinel");
     }
 
     #[tokio::test]

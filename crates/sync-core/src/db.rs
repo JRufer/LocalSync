@@ -170,6 +170,9 @@ impl StateDb {
             PRAGMA synchronous = NORMAL;
             PRAGMA foreign_keys = ON;
             PRAGMA temp_store = MEMORY;
+            PRAGMA cache_size = -16384;
+            PRAGMA mmap_size = 67108864;
+            PRAGMA busy_timeout = 5000;
 
             CREATE TABLE IF NOT EXISTS sync_state (
                 id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -290,7 +293,7 @@ impl StateDb {
     }
 
     fn upsert_entry_on_conn(conn: &Connection, entry: &EntryRow) -> Result<(), DbError> {
-        conn.execute(
+        let mut stmt = conn.prepare_cached(
             r#"
             INSERT INTO entries (
                 rel_path, parent_rel_path, name, is_dir,
@@ -322,25 +325,25 @@ impl StateDb {
                 suppress_local_until_ms = excluded.suppress_local_until_ms,
                 updated_at = excluded.updated_at
             "#,
-            params![
-                entry.rel_path,
-                entry.parent_rel_path,
-                entry.name,
-                if entry.is_dir { 1 } else { 0 },
-                entry.drive_file_id,
-                entry.drive_parent_id,
-                entry.md5_checksum,
-                entry.blake3_hash,
-                entry.size_bytes,
-                entry.remote_modified_ms,
-                entry.local_modified_ms,
-                entry.sync_status.as_str(),
-                entry.last_synced_hash,
-                entry.suppress_remote_until_ms,
-                entry.suppress_local_until_ms,
-                entry.updated_at,
-            ],
         )?;
+        stmt.execute(params![
+            entry.rel_path,
+            entry.parent_rel_path,
+            entry.name,
+            if entry.is_dir { 1 } else { 0 },
+            entry.drive_file_id,
+            entry.drive_parent_id,
+            entry.md5_checksum,
+            entry.blake3_hash,
+            entry.size_bytes,
+            entry.remote_modified_ms,
+            entry.local_modified_ms,
+            entry.sync_status.as_str(),
+            entry.last_synced_hash,
+            entry.suppress_remote_until_ms,
+            entry.suppress_local_until_ms,
+            entry.updated_at,
+        ])?;
         Ok(())
     }
 
@@ -369,7 +372,7 @@ impl StateDb {
 
     pub fn get_entry(&self, rel_path: &str) -> Result<Option<EntryRow>, DbError> {
         let conn = self.conn.lock().expect("db mutex poisoned");
-        conn.query_row(
+        let mut stmt = conn.prepare_cached(
             r#"
             SELECT rel_path, parent_rel_path, name, is_dir,
                    drive_file_id, drive_parent_id, md5_checksum, blake3_hash,
@@ -378,16 +381,15 @@ impl StateDb {
                    suppress_remote_until_ms, suppress_local_until_ms, updated_at
             FROM entries WHERE rel_path = ?1
             "#,
-            params![rel_path],
-            Self::map_entry_row,
-        )
-        .optional()
-        .map_err(DbError::from)
+        )?;
+        stmt.query_row(params![rel_path], Self::map_entry_row)
+            .optional()
+            .map_err(DbError::from)
     }
 
     pub fn get_entry_by_drive_id(&self, drive_file_id: &str) -> Result<Option<EntryRow>, DbError> {
         let conn = self.conn.lock().expect("db mutex poisoned");
-        conn.query_row(
+        let mut stmt = conn.prepare_cached(
             r#"
             SELECT rel_path, parent_rel_path, name, is_dir,
                    drive_file_id, drive_parent_id, md5_checksum, blake3_hash,
@@ -396,11 +398,10 @@ impl StateDb {
                    suppress_remote_until_ms, suppress_local_until_ms, updated_at
             FROM entries WHERE drive_file_id = ?1
             "#,
-            params![drive_file_id],
-            Self::map_entry_row,
-        )
-        .optional()
-        .map_err(DbError::from)
+        )?;
+        stmt.query_row(params![drive_file_id], Self::map_entry_row)
+            .optional()
+            .map_err(DbError::from)
     }
 
     pub fn list_all_entries(&self) -> Result<Vec<EntryRow>, DbError> {

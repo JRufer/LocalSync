@@ -1,4 +1,5 @@
 use crate::auth::{AuthError, TokenManager};
+use futures_util::StreamExt;
 use md5::{Digest, Md5};
 use rand::Rng;
 use reqwest::{Client, Method, StatusCode};
@@ -7,7 +8,7 @@ use std::path::Path;
 use std::time::Duration;
 use thiserror::Error;
 use tokio::fs;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncWriteExt, BufWriter};
 use uuid::Uuid;
 
 pub const DRIVE_FOLDER_MIME: &str = "application/vnd.google-apps.folder";
@@ -146,6 +147,10 @@ impl DriveClient {
         let http = Client::builder()
             .timeout(Duration::from_secs(120))
             .connect_timeout(Duration::from_secs(15))
+            .pool_idle_timeout(Duration::from_secs(90))
+            .pool_max_idle_per_host(16)
+            .tcp_keepalive(Duration::from_secs(60))
+            .tcp_nodelay(true)
             .build()?;
         Ok(Self {
             http,
@@ -412,15 +417,42 @@ impl DriveApi for DriveClient {
             })
             .await?;
 
-        let bytes = resp.bytes().await?;
-        let size = bytes.len() as u64;
-
+        let raw_file = fs::File::create(&tmp_path).await?;
+        let mut writer = BufWriter::with_capacity(64 * 1024, raw_file);
         let mut md5_hasher = Md5::new();
-        md5_hasher.update(&bytes);
-        let actual_md5 = hex::encode(md5_hasher.finalize());
+        let mut blake3_hasher = blake3::Hasher::new();
+        let mut size: u64 = 0;
 
+        let mut stream = resp.bytes_stream();
+        while let Some(chunk_res) = stream.next().await {
+            let chunk = match chunk_res {
+                Ok(c) => c,
+                Err(e) => {
+                    let _ = fs::remove_file(&tmp_path).await;
+                    return Err(DriveError::Http(e));
+                }
+            };
+            size += chunk.len() as u64;
+            md5_hasher.update(&chunk);
+            blake3_hasher.update(&chunk);
+            if let Err(e) = writer.write_all(&chunk).await {
+                let _ = fs::remove_file(&tmp_path).await;
+                return Err(DriveError::Io(e));
+            }
+        }
+
+        if let Err(e) = writer.flush().await {
+            let _ = fs::remove_file(&tmp_path).await;
+            return Err(DriveError::Io(e));
+        }
+        let inner_file = writer.into_inner();
+        inner_file.sync_all().await?;
+        drop(inner_file);
+
+        let actual_md5 = hex::encode(md5_hasher.finalize());
         if let Some(exp) = expected_md5 {
             if !exp.is_empty() && !exp.eq_ignore_ascii_case(&actual_md5) {
+                let _ = fs::remove_file(&tmp_path).await;
                 return Err(DriveError::VerificationFailed {
                     path: dest_path.display().to_string(),
                     reason: format!("MD5 mismatch: expected {exp}, got {actual_md5}"),
@@ -428,13 +460,7 @@ impl DriveApi for DriveClient {
             }
         }
 
-        let blake3_hash = blake3::hash(&bytes).to_hex().to_string();
-
-        let mut tmp_file = fs::File::create(&tmp_path).await?;
-        tmp_file.write_all(&bytes).await?;
-        tmp_file.sync_all().await?;
-        drop(tmp_file);
-
+        let blake3_hash = blake3_hasher.finalize().to_hex().to_string();
         fs::rename(&tmp_path, dest_path).await?;
         Ok((blake3_hash, size))
     }

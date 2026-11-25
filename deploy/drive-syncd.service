@@ -12,7 +12,16 @@ ExecStart=/usr/local/bin/drive-syncd --config /etc/drive-smb-sync/config.toml
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=5s
-Environment=RUST_LOG=info,sync_core=debug,share_smb=info
+Environment=RUST_LOG=info,sync_core=info,share_smb=info
+
+# Low system utilization & scheduling priorities for background sync on CachyOS
+Nice=5
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6
+CPUWeight=50
+IOWeight=50
+MemoryHigh=64M
+MemoryMax=128M
 
 # Hardening for CachyOS / Arch Linux systemd
 NoNewPrivileges=false
